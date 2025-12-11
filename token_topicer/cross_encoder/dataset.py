@@ -3,7 +3,6 @@ import json
 from typing import Any
 
 from dataclasses import dataclass, field
-import logging
 
 import lightning as L
 import torch
@@ -65,20 +64,25 @@ class CrossEncoderTopicClassifierDataModule(L.LightningDataModule):
         self,
         json_path_train: Path,
         json_path_val: Path,
+        cluster_topics_path: Path,
         batch_size: int,
         tokenizer_path: Path,
+        max_length: int = 512,
+        include_topic_description: bool = False,
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
 
         self.json_path_train = json_path_train
         self.json_path_val = json_path_val
+        self.cluster_topics_path = cluster_topics_path
+        self.include_topic_description = include_topic_description
+        self.max_length = max_length
         self.batch_size = batch_size
-
         self.tokenizer = transformers.AutoTokenizer.from_pretrained(tokenizer_path)
 
-        self.train_dataset = TokenGlinerDataset(self.json_path_train, self.tokenizer)
-        self.val_dataset = TokenGlinerDataset(self.json_path_val, self.tokenizer)
+        self.train_dataset = TokenGlinerDataset(self.json_path_train, self.cluster_topics_path, self.tokenizer, self.include_topic_description, self.max_length)
+        self.val_dataset = TokenGlinerDataset(self.json_path_val, self.cluster_topics_path, self.tokenizer, self.include_topic_description, self.max_length)
 
     def train_dataloader(self):
         return torch.utils.data.DataLoader(
@@ -103,13 +107,20 @@ class TokenGlinerDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         json_path: Path,
+        cluster_topics_path: Path,
         tokenizer: transformers.PreTrainedTokenizer,
+        include_topic_description: bool = False,
+        max_length: int = 512,
     ) -> None:
         super().__init__()
         self.json_data = [item for item in load_json(json_path) if len(item["annotations"]) > 0]
+        self.cluster_topics = load_json(cluster_topics_path)
+        self.include_topic_description = include_topic_description
+        self.max_length = max_length
         self.tokenizer = tokenizer
-        self.data = self.load_data()
 
+        self.data = self.load_data()
+        
     def load_data(self) -> list:
         data = []
 
@@ -120,10 +131,17 @@ class TokenGlinerDataset(torch.utils.data.Dataset):
             text = item["text"]
             annotations = item["annotations"]
 
-            for annotation in annotations:
-                label_name = annotation["label"]
+            cluster_id = item["cluster_id"]
+            cluster_topics = self.cluster_topics[str(cluster_id)]
+
+            for topic in cluster_topics:
+                topic_name = topic["nazev"]
+
+                topic_annotations = [ann for ann in annotations if ann["topic"] == topic_name]
+                topic_text = topic_name if not self.include_topic_description else f"{topic_name} - {topic['popis']}"
+
                 tokenizer_output = self.tokenizer(
-                    label_name,
+                    topic_text,
                     text,
                     return_tensors="pt",
                     truncation=True,
@@ -136,19 +154,22 @@ class TokenGlinerDataset(torch.utils.data.Dataset):
                 token_type_ids = tokenizer_output["token_type_ids"].squeeze(0)
                 labels = torch.zeros(len(offsets), dtype=torch.long)
 
-                text_token_indices = (token_type_ids == 1).nonzero(as_tuple=True)[0]
+                if len(input_ids) >= self.max_length:
+                    continue
 
-                labels = torch.zeros(len(text_token_indices) - 1, dtype=torch.float32)
+                text_token_indices = (token_type_ids == 1).nonzero(as_tuple=True)[0]
+                labels = torch.zeros(len(text_token_indices) - 1, dtype=torch.float32) # -1 to exclude last SEP token
 
                 # Build the binary mask for text tokens only
                 for idx, i in enumerate(text_token_indices):
                     start, end = offsets[i]
                     if start == end:
                         continue
-                    if end > annotation["start"] and start < annotation["end"]:
-                        labels[idx] = 1.0
-                        n_pos_labels += 1
-                    n_total_labels += 1
+                    for annotation in topic_annotations:
+                        if end > annotation["start"] and start < annotation["end"]:
+                            labels[idx] = 1.0
+                            n_pos_labels += 1
+                n_total_labels += len(labels)
 
                 sample = {
                     "input_ids": input_ids,
@@ -167,5 +188,41 @@ class TokenGlinerDataset(torch.utils.data.Dataset):
         return len(self.data)
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
-        idx = idx % len(self)
         return {**self.data[idx], "pos_weight": self.pos_weight}
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--json-path", type=Path, required=True)
+    parser.add_argument("--cluster-topics-path", type=Path, required=True)
+    parser.add_argument("--model")
+    args = parser.parse_args()
+
+    tokenizer = transformers.AutoTokenizer.from_pretrained(args.model)
+
+    print("Building dataset...")
+    dataset = TokenGlinerDataset(
+        json_path=args.json_path,
+        cluster_topics_path=args.cluster_topics_path,
+        tokenizer=tokenizer,
+        include_topic_description=True,
+    )
+
+    print(len(dataset))
+    from tqdm import tqdm
+
+    print("Calculating input lengths...")
+    lengths = []
+    for item in tqdm(dataset):
+        lengths.append(len(item["input_ids"]))
+
+    print("Plotting histogram...")
+    import matplotlib.pyplot as plt
+
+    plt.hist(lengths, bins=50)
+    plt.xlabel("Sequence Length")
+    plt.ylabel("Count")
+    plt.title("Input Sequence Length Distribution")
+    plt.savefig("input_length_distribution_topic_description.png")
