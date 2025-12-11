@@ -52,12 +52,14 @@ class CrossEncoderTopicClassifierModule(L.LightningModule):
         print(self.model)
 
         self.train_loss_meter = AverageMeter()
-        self.val_loss_meter = AverageMeter()
-
+        self.val_loss_meters = [AverageMeter(), AverageMeter()]
+        
         self.running_train_labels = []
-        self.running_val_labels = []
+        self.running_val_labels = [[], []]
         self.running_train_scores = []
-        self.running_val_scores = []
+        self.running_val_scores = [[], []]
+
+        self.val_dataloader_names = ["supervised", "zero_shot"]
 
     def training_step(self, batch: dict[str, torch.Tensor], batch_idx: int):
         outputs = self.common_step(batch, batch_idx)
@@ -82,25 +84,32 @@ class CrossEncoderTopicClassifierModule(L.LightningModule):
                 self.running_train_labels = []
                 self.running_train_scores = []
 
-    def validation_step(self, batch: dict[str, torch.Tensor], batch_idx: int):
+    def validation_step(self, batch: dict[str, torch.Tensor], batch_idx: int, dataloader_idx: int):
+        loader = self.val_dataloader_names[dataloader_idx]
+
         outputs = self.common_step(batch, batch_idx)
         loss = outputs["loss"]
         scores = outputs["scores"]
         mask = outputs["mask"]
-        self.val_loss_meter.update(loss.detach().cpu().flatten().tolist(), mask.sum().item())
-        self.running_val_labels.extend(batch["labels"][mask].detach().cpu().flatten().tolist())
-        self.running_val_scores.extend(scores[mask].detach().cpu().flatten().tolist())
+        self.val_loss_meters[dataloader_idx].update(loss.detach().cpu().flatten().tolist(), mask.sum().item())
+        self.running_val_labels[dataloader_idx].extend(batch["labels"][mask].detach().cpu().flatten().tolist())
+        self.running_val_scores[dataloader_idx].extend(scores[mask].detach().cpu().flatten().tolist())
         return loss.mean() / mask.sum()
     
     def on_validation_epoch_end(self):
-        self.log("loss/val", self.val_loss_meter(), prog_bar=True)
-        if len(self.running_val_labels) > 1:
-            val_auc = roc_auc_score(self.running_val_labels, self.running_val_scores)
-            val_ap = average_precision_score(self.running_val_labels, self.running_val_scores)
-            self.log("ap/val", val_ap, prog_bar=True)
-            self.log("auc/val", val_auc, prog_bar=True)
-            self.running_val_labels = []
-            self.running_val_scores = []
+        for i, name in enumerate(self.val_dataloader_names):
+            meter = self.val_loss_meters[i]
+            labels = self.running_val_labels[i]
+            scores = self.running_val_scores[i]
+
+            self.log(f"loss/val_{name}", meter(), prog_bar=True)
+            if len(labels) > 1:
+                val_auc = roc_auc_score(labels, scores)
+                val_ap = average_precision_score(labels, scores)
+                self.log(f"ap/val_{name}", val_ap, prog_bar=True)
+                self.log(f"auc/val_{name}", val_auc, prog_bar=True)
+                self.running_val_labels[i] = []
+                self.running_val_scores[i] = []
 
     def common_step(self, batch: dict[str, torch.Tensor], batch_idx: int):
         input_ids = batch["input_ids"]
