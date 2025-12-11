@@ -1,5 +1,30 @@
 # lightning.pytorch==2.6.0
-seed_everything: true
+seed_everything: 42
+
+model:
+  lm_path: UWB-AIR/Czert-B-base-cased
+  weight_decay: 0.00
+  learning_rate: 1e-5
+  output_projection_layers: 1
+  scale_positives: true
+  normalize_score: true
+  soft_max_score: true
+
+data:
+  json_path_train: /home/ikostelnik/projects/topics/data/dataset-15k/splits/train.json
+  json_path_val_supervised: /home/ikostelnik/projects/topics/data/dataset-15k/splits/val_supervised.json
+  json_path_val_zero_shot: /home/ikostelnik/projects/topics/data/dataset-15k/splits/val_zero_shot.json
+  cluster_topics_path: /home/ikostelnik/projects/topics/data/dataset-15k/cluster_topics.json
+  batch_size: 64
+  tokenizer_path: ${model.lm_path}
+  include_topic_description: true
+  max_length: 350
+  data_limit: null
+
+experiment:
+  project: token-gliner
+  name: ${replace_slash:${model.lm_path}}_td-${data.include_topic_description}_ns-${model.normalize_score}_sms-${model.soft_max_score}_sp-${model.scale_positives}_ol-${model.output_projection_layers}_bs-${data.batch_size}_lr-${model.learning_rate}_ml-${data.max_length}_wd-${model.weight_decay}
+  # name: dev
 
 trainer:
   accelerator: auto
@@ -8,9 +33,53 @@ trainer:
   num_nodes: 1
   precision: null
   logger: null
-  callbacks: null
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        save_last: true
+        filename: last
+        save_top_k: 0
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: step
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        monitor: loss/val_supervised
+        mode: min
+        save_top_k: 1
+        filename: best_loss_val_supervised
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        monitor: loss/val_zero_shot
+        mode: min
+        save_top_k: 1
+        filename: best_loss_val_zero_shot
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        monitor: ap/val_supervised
+        mode: max
+        save_top_k: 1
+        filename: best_ap_val_supervised
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        monitor: ap/val_zero_shot
+        mode: max
+        save_top_k: 1
+        filename: best_ap_val_zero_shot
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        monitor: auc/val_supervised
+        mode: max
+        save_top_k: 1
+        filename: best_auc_val_supervised
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        monitor: auc/val_zero_shot
+        mode: max
+        save_top_k: 1
+        filename: best_auc_val_zero_shot
   fast_dev_run: false
-  max_epochs: null
+  max_epochs: 20
   min_epochs: null
   max_steps: -1
   min_steps: null
@@ -20,10 +89,10 @@ trainer:
   limit_test_batches: null
   limit_predict_batches: null
   overfit_batches: 0.0
-  val_check_interval: null
+  val_check_interval: 200
   check_val_every_n_epoch: 1
   num_sanity_val_steps: null
-  log_every_n_steps: null
+  log_every_n_steps: 200
   enable_checkpointing: null
   enable_progress_bar: null
   enable_model_summary: null
@@ -40,26 +109,9 @@ trainer:
   plugins: null
   sync_batchnorm: false
   reload_dataloaders_every_n_epochs: 0
-  default_root_dir: null
-  enable_autolog_hparams: true
+  default_root_dir: ${experiment.name}
   model_registry: null
-
-model:
-  lm_path: /home/ikostelnik/projects/topics/token-gliner/models/Czert-B-base-cased-adapted
-  weight_decay: 0.01
-  learning_rate: 3e-5
-
-data:
-  json_path_train: /home/ikostelnik/projects/topics/data/token-gliner/supervised-split/train.json
-  json_path_val: /home/ikostelnik/projects/topics/data/token-gliner/supervised-split/val.json
-  batch_size: 8
-  tokenizer_path: ${model.lm_path}
-
-experiment:
-  project: custom-gliner
-  name: dev
 
 optimizer: null
 lr_scheduler: null
 ckpt_path: null
-weights_only: null
