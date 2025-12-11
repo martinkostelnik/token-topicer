@@ -6,6 +6,7 @@ import lightning as L
 from lightning.pytorch.cli import LightningCLI
 import torch
 from sklearn.metrics import roc_auc_score, average_precision_score
+from omegaconf import OmegaConf
 
 from token_topicer.cross_encoder.dataset import CrossEncoderTopicClassifierDataModule
 from token_topicer.cross_encoder.model import CrossEncoderModel 
@@ -186,6 +187,7 @@ class TokenGlinerCLI(LightningCLI):
 
 
 def cli_main():
+    OmegaConf.register_new_resolver("replace_slash", lambda s: s.replace("/", "_"))
     cli = TokenGlinerCLI(
         model_class=CrossEncoderTopicClassifierModule,
         datamodule_class=CrossEncoderTopicClassifierDataModule,
