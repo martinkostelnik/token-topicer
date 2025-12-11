@@ -70,6 +70,7 @@ class CrossEncoderTopicClassifierDataModule(L.LightningDataModule):
         tokenizer_path: Path,
         max_length: int = 512,
         include_topic_description: bool = False,
+        data_limit: int | None = None,
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
@@ -79,13 +80,14 @@ class CrossEncoderTopicClassifierDataModule(L.LightningDataModule):
         self.json_path_val_zero_shot = json_path_val_zero_shot
         self.cluster_topics_path = cluster_topics_path
         self.include_topic_description = include_topic_description
+        self.data_limit = data_limit
         self.max_length = max_length
         self.batch_size = batch_size
         self.tokenizer = transformers.AutoTokenizer.from_pretrained(tokenizer_path)
 
-        self.train_dataset = TokenGlinerDataset(self.json_path_train, self.cluster_topics_path, self.tokenizer, self.include_topic_description, self.max_length)
-        self.val_dataset_supervised = TokenGlinerDataset(self.json_path_val_supervised, self.cluster_topics_path, self.tokenizer, self.include_topic_description, self.max_length)
-        self.val_dataset_zero_shot = TokenGlinerDataset(self.json_path_val_zero_shot, self.cluster_topics_path, self.tokenizer, self.include_topic_description, self.max_length)
+        self.train_dataset = TokenGlinerDataset(self.json_path_train, self.cluster_topics_path, self.tokenizer, self.include_topic_description, self.max_length, self.data_limit)
+        self.val_dataset_supervised = TokenGlinerDataset(self.json_path_val_supervised, self.cluster_topics_path, self.tokenizer, self.include_topic_description, self.max_length, self.data_limit)
+        self.val_dataset_zero_shot = TokenGlinerDataset(self.json_path_val_zero_shot, self.cluster_topics_path, self.tokenizer, self.include_topic_description, self.max_length, self.data_limit)
 
     def train_dataloader(self):
         return torch.utils.data.DataLoader(
@@ -123,6 +125,7 @@ class TokenGlinerDataset(torch.utils.data.Dataset):
         tokenizer: transformers.PreTrainedTokenizer,
         include_topic_description: bool = False,
         max_length: int = 512,
+        data_limit: int | None = None,
     ) -> None:
         super().__init__()
         self.json_data = [item for item in load_json(json_path) if len(item["annotations"]) > 0]
@@ -130,6 +133,7 @@ class TokenGlinerDataset(torch.utils.data.Dataset):
         self.include_topic_description = include_topic_description
         self.max_length = max_length
         self.tokenizer = tokenizer
+        self.data_limit = data_limit
 
         self.data = self.load_data()
         
@@ -138,6 +142,8 @@ class TokenGlinerDataset(torch.utils.data.Dataset):
 
         n_pos_labels = 0
         n_total_labels = 0
+
+        loaded_samples = 0
 
         for item in self.json_data:
             text = item["text"]
@@ -191,6 +197,12 @@ class TokenGlinerDataset(torch.utils.data.Dataset):
                 }
 
                 data.append(sample)
+                loaded_samples += 1
+                if self.data_limit is not None and loaded_samples >= self.data_limit:
+                    break
+
+            if self.data_limit is not None and loaded_samples >= self.data_limit:
+                break
 
         self.pos_weight = (n_total_labels - n_pos_labels) / n_pos_labels
         return data

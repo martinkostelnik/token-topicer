@@ -12,6 +12,9 @@ from token_topicer.cross_encoder.dataset import CrossEncoderTopicClassifierDataM
 from token_topicer.cross_encoder.model import CrossEncoderModel 
 
 
+import transformers
+tokenizer = transformers.AutoTokenizer.from_pretrained("UWB-AIR/Czert-B-base-cased")
+
 class AverageMeter:
     def __init__(self):
         self.reset()
@@ -28,7 +31,7 @@ class AverageMeter:
         value = self.val / self.count if self.count != 0 else 0.0
         self.reset()
         return value
-    
+
 
 class CrossEncoderTopicClassifierModule(L.LightningModule):
     def __init__(
@@ -38,6 +41,8 @@ class CrossEncoderTopicClassifierModule(L.LightningModule):
         weight_decay: float,
         output_projection_layers: int = 2,
         scale_positives: bool = True,
+        normalize_score: bool = True,
+        soft_max_score: bool = False,
     ) -> None:
         super().__init__()
 
@@ -45,6 +50,8 @@ class CrossEncoderTopicClassifierModule(L.LightningModule):
         self.learning_rate = learning_rate
         self.scale_positives = scale_positives
         self.weight_decay = weight_decay
+        self.normalize_score = normalize_score
+        self.soft_max_score = soft_max_score
 
         self.model = CrossEncoderModel(
             lm_path=lm_path,
@@ -56,7 +63,7 @@ class CrossEncoderTopicClassifierModule(L.LightningModule):
 
         self.train_loss_meter = AverageMeter()
         self.val_loss_meters = [AverageMeter(), AverageMeter()]
-        
+
         self.running_train_labels = []
         self.running_val_labels = [[], []]
         self.running_train_scores = []
@@ -74,8 +81,8 @@ class CrossEncoderTopicClassifierModule(L.LightningModule):
         self.running_train_labels.extend(batch["labels"][mask].detach().cpu().flatten().tolist())
         self.running_train_scores.extend(scores[mask].detach().cpu().flatten().tolist())
 
-        return loss.mean() / mask.sum()
-    
+        return loss.sum() / mask.sum()
+
     def on_train_batch_end(self, outputs, batch, batch_idx):
         if self.trainer.global_step % self.trainer.log_every_n_steps == 0:
             self.log("loss/train", self.train_loss_meter(), on_step=True, on_epoch=False, prog_bar=True)
@@ -88,8 +95,6 @@ class CrossEncoderTopicClassifierModule(L.LightningModule):
                 self.running_train_scores = []
 
     def validation_step(self, batch: dict[str, torch.Tensor], batch_idx: int, dataloader_idx: int):
-        loader = self.val_dataloader_names[dataloader_idx]
-
         outputs = self.common_step(batch, batch_idx)
         loss = outputs["loss"]
         scores = outputs["scores"]
@@ -97,8 +102,8 @@ class CrossEncoderTopicClassifierModule(L.LightningModule):
         self.val_loss_meters[dataloader_idx].update(loss.detach().cpu().flatten().tolist(), mask.sum().item())
         self.running_val_labels[dataloader_idx].extend(batch["labels"][mask].detach().cpu().flatten().tolist())
         self.running_val_scores[dataloader_idx].extend(scores[mask].detach().cpu().flatten().tolist())
-        return loss.mean() / mask.sum()
-    
+        return loss.sum() / mask.sum()
+
     def on_validation_epoch_end(self):
         for i, name in enumerate(self.val_dataloader_names):
             meter = self.val_loss_meters[i]
@@ -131,7 +136,10 @@ class CrossEncoderTopicClassifierModule(L.LightningModule):
         )
 
         # Max over topic tokens
-        scores = similarity_matrix.max(dim=1).values  # shape (B, S_text)
+        if self.soft_max_score:
+            scores = torch.logsumexp(similarity_matrix, dim=1)  # shape (B, S_text)
+        else:
+            scores = similarity_matrix.max(dim=1).values  # shape (B, S_text)
 
         # Compute BCE loss with masking
         loss = torch.nn.functional.binary_cross_entropy_with_logits(
@@ -140,7 +148,6 @@ class CrossEncoderTopicClassifierModule(L.LightningModule):
             reduction="none",
             pos_weight=batch["pos_weight"] if self.scale_positives else None,
         )
-
         mask = labels != -1
         loss = loss * mask.float()
 
@@ -149,32 +156,58 @@ class CrossEncoderTopicClassifierModule(L.LightningModule):
             "scores": scores,
             "mask": mask,
         }
-    
+
     def cross_dot_product(
         self,
         model_outputs: torch.Tensor,
         token_type_ids: torch.Tensor,
         attention_mask: torch.Tensor,
     ):
+        """
+        Computes a similarity matrix between topic tokens and text tokens.
+        Handles padding correctly and ignores CLS/SEP tokens.
+        
+        Args:
+            model_outputs: (B, seq_len, hidden_dim) output of LM
+            token_type_ids: (B, seq_len), 0=topic, 1=text
+            attention_mask: (B, seq_len)
+        
+        Returns:
+            similarity_matrix: (B, topic_len, text_len)
+        """
+        # Masks for topic and text tokens
         topic_mask = (token_type_ids == 0) & attention_mask.bool()
         text_mask = (token_type_ids == 1) & attention_mask.bool()
 
-        topic_tokens = [out[m.bool()][1:-1] for out, m in zip(model_outputs, topic_mask)] # exclude [CLS] and [SEP]
-        text_tokens = [out[m.bool()][:-1] for out, m in zip(model_outputs, text_mask)] # exclude [SEP]  
+        # Extract tokens per batch item
+        topic_tokens_list = [out[m.bool()][1:-1] for out, m in zip(model_outputs, topic_mask)]  # exclude CLS and SEP
+        text_tokens_list = [out[m.bool()][:-1] for out, m in zip(model_outputs, text_mask)]     # exclude SEP
 
-        topic_tokens = torch.nn.utils.rnn.pad_sequence(topic_tokens, batch_first=True)
-        text_tokens = torch.nn.utils.rnn.pad_sequence(text_tokens, batch_first=True)
-        
-        similarity_matrix = torch.bmm(
-            topic_tokens,
-            text_tokens.transpose(1, 2),
-        )
-        
+        # Pad sequences to max length in batch
+        topic_tokens = torch.nn.utils.rnn.pad_sequence(topic_tokens_list, batch_first=True)
+        text_tokens = torch.nn.utils.rnn.pad_sequence(text_tokens_list, batch_first=True)
+
+        # Create masks for padded tokens
+        topic_lens = torch.tensor([t.shape[0] for t in topic_tokens_list], device=model_outputs.device)
+        text_lens = torch.tensor([t.shape[0] for t in text_tokens_list], device=model_outputs.device)
+
+        text_pad_mask = (torch.arange(text_tokens.size(1), device=model_outputs.device)[None, :] < text_lens[:, None])
+        top_pad_mask = (torch.arange(topic_tokens.size(1), device=model_outputs.device)[None, :] < topic_lens[:, None])
+
+        # Compute similarity
+        similarity_matrix = torch.bmm(topic_tokens, text_tokens.transpose(1, 2))  # (B, topic_len, text_len)
+        if self.normalize_score:
+            similarity_matrix = similarity_matrix / torch.sqrt(torch.tensor(model_outputs.size(-1), dtype=torch.float32, device=model_outputs.device))
+
+        # Mask out padded text positions with -inf so max ignores them
+        similarity_matrix = similarity_matrix.masked_fill(~text_pad_mask[:, None, :], -1e10)
+        similarity_matrix = similarity_matrix.masked_fill(~top_pad_mask[:, :, None], -1e10)
+
         return similarity_matrix
 
     def configure_optimizers(self):
         return torch.optim.AdamW(
-            self.parameters(),
+            self.model.parameters(),
             lr=self.learning_rate,
             weight_decay=self.weight_decay,
         )
