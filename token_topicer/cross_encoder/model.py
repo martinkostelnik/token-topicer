@@ -15,6 +15,7 @@ class CrossEncoderModel(torch.nn.Module):
         super().__init__()
         
         self.language_model = transformers.AutoModel.from_pretrained(lm_path)
+        
         self.output_projection = MLP(
             input_dim=self.language_model.config.hidden_size,
             hidden_dim=self.language_model.config.hidden_size,
@@ -22,7 +23,7 @@ class CrossEncoderModel(torch.nn.Module):
             n_layers=output_projection_layers,
             dropout=0.0,
             input_dropout=0.0,
-        )
+        ) if output_projection_layers > 0 else None
 
     def forward(
         self,
@@ -32,8 +33,9 @@ class CrossEncoderModel(torch.nn.Module):
         outputs = self.language_model(
             input_ids=input_ids,
             attention_mask=attention_mask,
-        )
+        ).last_hidden_state
 
-        projected_outputs = self.output_projection(outputs.last_hidden_state)
+        if self.output_projection is not None:
+            outputs = self.output_projection(outputs)
         
-        return projected_outputs
+        return outputs
