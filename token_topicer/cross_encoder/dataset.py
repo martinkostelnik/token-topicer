@@ -63,7 +63,8 @@ class CrossEncoderTopicClassifierDataModule(L.LightningDataModule):
     def __init__(
         self,
         json_path_train: Path,
-        json_path_val: Path,
+        json_path_val_supervised: Path,
+        json_path_val_zero_shot: Path,
         cluster_topics_path: Path,
         batch_size: int,
         tokenizer_path: Path,
@@ -74,7 +75,8 @@ class CrossEncoderTopicClassifierDataModule(L.LightningDataModule):
         self.save_hyperparameters()
 
         self.json_path_train = json_path_train
-        self.json_path_val = json_path_val
+        self.json_path_val_supervised = json_path_val_supervised
+        self.json_path_val_zero_shot = json_path_val_zero_shot
         self.cluster_topics_path = cluster_topics_path
         self.include_topic_description = include_topic_description
         self.max_length = max_length
@@ -82,7 +84,8 @@ class CrossEncoderTopicClassifierDataModule(L.LightningDataModule):
         self.tokenizer = transformers.AutoTokenizer.from_pretrained(tokenizer_path)
 
         self.train_dataset = TokenGlinerDataset(self.json_path_train, self.cluster_topics_path, self.tokenizer, self.include_topic_description, self.max_length)
-        self.val_dataset = TokenGlinerDataset(self.json_path_val, self.cluster_topics_path, self.tokenizer, self.include_topic_description, self.max_length)
+        self.val_dataset_supervised = TokenGlinerDataset(self.json_path_val_supervised, self.cluster_topics_path, self.tokenizer, self.include_topic_description, self.max_length)
+        self.val_dataset_zero_shot = TokenGlinerDataset(self.json_path_val_zero_shot, self.cluster_topics_path, self.tokenizer, self.include_topic_description, self.max_length)
 
     def train_dataloader(self):
         return torch.utils.data.DataLoader(
@@ -94,13 +97,22 @@ class CrossEncoderTopicClassifierDataModule(L.LightningDataModule):
         )
 
     def val_dataloader(self):
-        return torch.utils.data.DataLoader(
-            self.val_dataset,
-            batch_size=self.batch_size,
-            shuffle=False,
-            collate_fn=collate_fn,
-            num_workers=4,
-        )
+        return [
+            torch.utils.data.DataLoader(
+                self.val_dataset_supervised,
+                batch_size=self.batch_size,
+                shuffle=False,
+                collate_fn=collate_fn,
+                num_workers=4,
+            ),
+            torch.utils.data.DataLoader(
+                self.val_dataset_zero_shot,
+                batch_size=self.batch_size,
+                shuffle=False,
+                collate_fn=collate_fn,
+                num_workers=4,
+            ),
+        ]
 
 
 class TokenGlinerDataset(torch.utils.data.Dataset):
