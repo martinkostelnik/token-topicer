@@ -37,15 +37,18 @@ class CrossEncoderTopicClassifierModule(L.LightningModule):
         learning_rate: float,
         weight_decay: float,
         output_projection_layers: int = 2,
+        scale_positives: bool = True,
     ) -> None:
         super().__init__()
 
         self.lm_path = lm_path
         self.learning_rate = learning_rate
+        self.scale_positives = scale_positives
         self.weight_decay = weight_decay
 
         self.model = CrossEncoderModel(
             lm_path=lm_path,
+            output_projection_layers=output_projection_layers,
         )
         self.model.train()
 
@@ -135,7 +138,7 @@ class CrossEncoderTopicClassifierModule(L.LightningModule):
             scores,
             labels,
             reduction="none",
-            pos_weight=batch["pos_weight"],
+            pos_weight=batch["pos_weight"] if self.scale_positives else None,
         )
 
         mask = labels != -1
