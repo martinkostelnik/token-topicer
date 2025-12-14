@@ -89,6 +89,9 @@ class CrossEncoderTopicClassifierDataModule(L.LightningDataModule):
         self.val_dataset_supervised = TokenGlinerDataset(self.json_path_val_supervised, self.cluster_topics_path, self.tokenizer, self.include_topic_description, self.max_length, self.data_limit)
         self.val_dataset_zero_shot = TokenGlinerDataset(self.json_path_val_zero_shot, self.cluster_topics_path, self.tokenizer, self.include_topic_description, self.max_length, self.data_limit)
 
+    def setup(self, stage: str | None = None) -> None:
+        self.tokenizer.save_pretrained(self.trainer.default_root_dir)
+
     def train_dataloader(self):
         return torch.utils.data.DataLoader(
             self.train_dataset,
