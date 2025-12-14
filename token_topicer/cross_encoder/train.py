@@ -12,9 +12,6 @@ from token_topicer.cross_encoder.dataset import CrossEncoderTopicClassifierDataM
 from token_topicer.cross_encoder.model import CrossEncoderModel 
 
 
-import transformers
-tokenizer = transformers.AutoTokenizer.from_pretrained("UWB-AIR/Czert-B-base-cased")
-
 class AverageMeter:
     def __init__(self):
         self.reset()
