@@ -12,7 +12,6 @@ def parse_args():
     parser.add_argument("--config", type=Path, required=False, help="Path to the model config file.")
     parser.add_argument("--output", type=Path, required=True, help="Path to save the traced model.")
     parser.add_argument("--map-location", type=str, default="cpu", help="Map location for loading the model.")
-    parser.add_argument("--threshold", type=float, default=0.5, help="Threshold for classification.")
 
     return parser.parse_args()
 
