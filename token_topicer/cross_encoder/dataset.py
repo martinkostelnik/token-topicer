@@ -116,6 +116,7 @@ class TokenGlinerDataset(torch.utils.data.Dataset):
         include_topic_description: bool = False,
         max_length: int = 512,
         data_limit: int | None = None,
+        return_labels: bool = True,
     ) -> None:
         super().__init__()
         
@@ -126,6 +127,7 @@ class TokenGlinerDataset(torch.utils.data.Dataset):
         self.include_topic_description = include_topic_description
         self.max_length = max_length
         self.data_limit = data_limit
+        self.return_labels = return_labels
 
         self.data = self.load_data()
 
@@ -138,7 +140,6 @@ class TokenGlinerDataset(torch.utils.data.Dataset):
             text = item["text"]
             topic_name = item["topic_name"]
             topic_description = item["topic_description"]
-            annotations = item["annotations"]
 
             topic_text = f"{topic_name}" if not self.include_topic_description else f"{topic_name} - {topic_description}"
 
@@ -154,35 +155,40 @@ class TokenGlinerDataset(torch.utils.data.Dataset):
             input_ids = tokenizer_output["input_ids"].squeeze(0)
             attention_mask = tokenizer_output["attention_mask"].squeeze(0)
             token_type_ids = tokenizer_output["token_type_ids"].squeeze(0)
-            labels = torch.zeros(len(offsets), dtype=torch.long)
 
             if len(input_ids) >= self.max_length:
                 continue
-            text_token_indices = (token_type_ids == 1).nonzero(as_tuple=True)[0]
-            labels = torch.zeros(len(text_token_indices) - 1, dtype=torch.float32) # -1 to exclude last SEP token
 
-            # Build the binary mask for text tokens only
-            for idx, i in enumerate(text_token_indices):
-                start, end = offsets[i]
-                if start == end:
-                    continue
-                for annotation in annotations:
-                    if end > annotation["start"] and start < annotation["end"]:
-                        labels[idx] = 1.0
-                        n_pos_labels += 1
-            n_total_labels += len(labels)
             sample = {
                 "input_ids": input_ids,
                 "token_type_ids": token_type_ids,
-                "labels": labels,
                 "attention_mask": attention_mask,
             }
+
+            if self.return_labels:
+                annotations = item["annotations"]
+                text_token_indices = (token_type_ids == 1).nonzero(as_tuple=True)[0]
+                labels = torch.zeros(len(text_token_indices) - 1, dtype=torch.float32) # -1 to exclude last SEP token
+
+                # Build the binary mask for text tokens only
+                for idx, i in enumerate(text_token_indices):
+                    start, end = offsets[i]
+                    if start == end:
+                        continue
+                    for annotation in annotations:
+                        if end > annotation["start"] and start < annotation["end"]:
+                            labels[idx] = 1.0
+                            n_pos_labels += 1
+                n_total_labels += len(labels)
+
+                sample["labels"] = labels
+
             data.append(sample)
             loaded_samples += 1
             if self.data_limit is not None and loaded_samples >= self.data_limit:
                 break
 
-        self.pos_weight = (n_total_labels - n_pos_labels) / n_pos_labels
+        self.pos_weight = ((n_total_labels - n_pos_labels) / n_pos_labels) if self.return_labels else 1.0
         return data
 
     def __len__(self) -> int:
