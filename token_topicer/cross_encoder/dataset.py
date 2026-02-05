@@ -9,6 +9,8 @@ import torch
 from torch.nn.utils.rnn import pad_sequence
 import transformers
 
+from token_topicer.utils import prepare_sample_for_model
+
 
 def load_json(path: Path) -> list[dict[str, Any]]:
     with open(path, "r") as f:
@@ -119,7 +121,7 @@ class CrossEncoderTopicDataset(torch.utils.data.Dataset):
         return_labels: bool = True,
     ) -> None:
         super().__init__()
-        
+
         with open(json_path, "r") as f:
             self.jsonl_data = [json.loads(line) for line in f]
         
@@ -141,38 +143,25 @@ class CrossEncoderTopicDataset(torch.utils.data.Dataset):
             topic_name = item["topic_name"]
             topic_description = item["topic_description"]
 
-            topic_text = f"{topic_name}" if not self.include_topic_description else f"{topic_name} - {topic_description}"
-
-            tokenizer_output = self.tokenizer(
-                topic_text,
-                text,
-                return_tensors="pt",
-                truncation=True,
+            sample = prepare_sample_for_model(
+                text=text,
+                topic=topic_name,
+                tokenizer=self.tokenizer,
+                include_topic_description=self.include_topic_description,
+                topic_description=topic_description,
                 max_length=self.max_length,
-                return_offsets_mapping=True,
             )
-            offsets = tokenizer_output["offset_mapping"].squeeze(0).tolist()
-            input_ids = tokenizer_output["input_ids"].squeeze(0)
-            attention_mask = tokenizer_output["attention_mask"].squeeze(0)
-            token_type_ids = tokenizer_output["token_type_ids"].squeeze(0)
-
-            if len(input_ids) >= self.max_length:
+            if sample is None:
                 continue
-
-            sample = {
-                "input_ids": input_ids,
-                "token_type_ids": token_type_ids,
-                "attention_mask": attention_mask,
-            }
 
             if self.return_labels:
                 annotations = item["annotations"]
-                text_token_indices = (token_type_ids == 1).nonzero(as_tuple=True)[0]
+                text_token_indices = (sample["token_type_ids"] == 1).nonzero(as_tuple=True)[0]
                 labels = torch.zeros(len(text_token_indices) - 1, dtype=torch.float32) # -1 to exclude last SEP token
 
                 # Build the binary mask for text tokens only
                 for idx, i in enumerate(text_token_indices):
-                    start, end = offsets[i]
+                    start, end = sample["offset_mapping"][i]
                     if start == end:
                         continue
                     for annotation in annotations:

@@ -33,6 +33,54 @@ class AverageMeter:
         return value
 
 
+def cross_dot_product(
+    model_outputs: torch.Tensor,
+    token_type_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    normalize_score: bool = True,
+):
+    """
+    Computes a similarity matrix between topic tokens and text tokens.
+    Handles padding correctly and ignores CLS/SEP tokens.
+    
+    Args:
+        model_outputs: (B, seq_len, hidden_dim) output of LM
+        token_type_ids: (B, seq_len), 0=topic, 1=text
+        attention_mask: (B, seq_len)
+    
+    Returns:
+        similarity_matrix: (B, topic_len, text_len)
+    """
+    # Masks for topic and text tokens
+    topic_mask = (token_type_ids == 0) & attention_mask.bool()
+    text_mask = (token_type_ids == 1) & attention_mask.bool()
+
+    # Extract tokens per batch item
+    topic_tokens_list = [out[m.bool()][1:-1] for out, m in zip(model_outputs, topic_mask)]  # exclude CLS and SEP
+    text_tokens_list = [out[m.bool()][:-1] for out, m in zip(model_outputs, text_mask)]     # exclude SEP
+
+    # Pad sequences to max length in batch
+    topic_tokens = torch.nn.utils.rnn.pad_sequence(topic_tokens_list, batch_first=True)
+    text_tokens = torch.nn.utils.rnn.pad_sequence(text_tokens_list, batch_first=True)
+
+    # Create masks for padded tokens
+    topic_lens = torch.tensor([t.shape[0] for t in topic_tokens_list], device=model_outputs.device)
+    text_lens = torch.tensor([t.shape[0] for t in text_tokens_list], device=model_outputs.device)
+
+    text_pad_mask = (torch.arange(text_tokens.size(1), device=model_outputs.device)[None, :] < text_lens[:, None])
+    top_pad_mask = (torch.arange(topic_tokens.size(1), device=model_outputs.device)[None, :] < topic_lens[:, None])
+
+    # Compute similarity
+    similarity_matrix = torch.bmm(topic_tokens, text_tokens.transpose(1, 2))  # (B, topic_len, text_len)
+    if normalize_score:
+        similarity_matrix = similarity_matrix / torch.sqrt(torch.tensor(model_outputs.size(-1), dtype=torch.float32, device=model_outputs.device))
+
+    # Mask out padded text positions with -inf so max ignores them
+    similarity_matrix = similarity_matrix.masked_fill(~text_pad_mask[:, None, :], -1e10)
+    similarity_matrix = similarity_matrix.masked_fill(~top_pad_mask[:, :, None], -1e10)
+
+    return similarity_matrix
+
 class CrossEncoderTopicClassifierModule(L.LightningModule):
     def __init__(
         self,
@@ -69,6 +117,9 @@ class CrossEncoderTopicClassifierModule(L.LightningModule):
         self.running_val_labels = []
         self.running_train_scores = []
         self.running_val_scores = []
+
+    def forward(self, **kwargs):
+        return self.model(**kwargs)
 
     def training_step(self, batch: dict[str, torch.Tensor], batch_idx: int):
         outputs = self.common_step(batch, batch_idx)
@@ -127,10 +178,11 @@ class CrossEncoderTopicClassifierModule(L.LightningModule):
         model_outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
 
         # Get similarity matrix and text padding mask
-        similarity_matrix = self.cross_dot_product(
+        similarity_matrix = cross_dot_product(
             model_outputs=model_outputs,
             token_type_ids=token_type_ids,
             attention_mask=attention_mask,
+            normalize_score=self.normalize_score,
         )
 
         # Max over topic tokens
@@ -154,79 +206,6 @@ class CrossEncoderTopicClassifierModule(L.LightningModule):
             "scores": scores,
             "mask": mask,
         }
-    
-    def predict_step(self, batch: dict[str, torch.Tensor], batch_idx: int):
-        input_ids = batch["input_ids"]
-        attention_mask = batch["attention_mask"]
-        token_type_ids = batch["token_type_ids"]
-
-        # Model forward
-        model_outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
-
-        # Get similarity matrix and text padding mask
-        similarity_matrix = self.cross_dot_product(
-            model_outputs=model_outputs,
-            token_type_ids=token_type_ids,
-            attention_mask=attention_mask,
-        )
-
-        # Max over topic tokens
-        if self.soft_max_score:
-            scores = torch.logsumexp(similarity_matrix, dim=1)  # shape (B, S_text)
-        else:
-            scores = similarity_matrix.max(dim=1).values  # shape (B, S_text)
-
-        probs = torch.sigmoid(scores)
-
-        return probs
-
-    def cross_dot_product(
-        self,
-        model_outputs: torch.Tensor,
-        token_type_ids: torch.Tensor,
-        attention_mask: torch.Tensor,
-    ):
-        """
-        Computes a similarity matrix between topic tokens and text tokens.
-        Handles padding correctly and ignores CLS/SEP tokens.
-        
-        Args:
-            model_outputs: (B, seq_len, hidden_dim) output of LM
-            token_type_ids: (B, seq_len), 0=topic, 1=text
-            attention_mask: (B, seq_len)
-        
-        Returns:
-            similarity_matrix: (B, topic_len, text_len)
-        """
-        # Masks for topic and text tokens
-        topic_mask = (token_type_ids == 0) & attention_mask.bool()
-        text_mask = (token_type_ids == 1) & attention_mask.bool()
-
-        # Extract tokens per batch item
-        topic_tokens_list = [out[m.bool()][1:-1] for out, m in zip(model_outputs, topic_mask)]  # exclude CLS and SEP
-        text_tokens_list = [out[m.bool()][:-1] for out, m in zip(model_outputs, text_mask)]     # exclude SEP
-
-        # Pad sequences to max length in batch
-        topic_tokens = torch.nn.utils.rnn.pad_sequence(topic_tokens_list, batch_first=True)
-        text_tokens = torch.nn.utils.rnn.pad_sequence(text_tokens_list, batch_first=True)
-
-        # Create masks for padded tokens
-        topic_lens = torch.tensor([t.shape[0] for t in topic_tokens_list], device=model_outputs.device)
-        text_lens = torch.tensor([t.shape[0] for t in text_tokens_list], device=model_outputs.device)
-
-        text_pad_mask = (torch.arange(text_tokens.size(1), device=model_outputs.device)[None, :] < text_lens[:, None])
-        top_pad_mask = (torch.arange(topic_tokens.size(1), device=model_outputs.device)[None, :] < topic_lens[:, None])
-
-        # Compute similarity
-        similarity_matrix = torch.bmm(topic_tokens, text_tokens.transpose(1, 2))  # (B, topic_len, text_len)
-        if self.normalize_score:
-            similarity_matrix = similarity_matrix / torch.sqrt(torch.tensor(model_outputs.size(-1), dtype=torch.float32, device=model_outputs.device))
-
-        # Mask out padded text positions with -inf so max ignores them
-        similarity_matrix = similarity_matrix.masked_fill(~text_pad_mask[:, None, :], -1e10)
-        similarity_matrix = similarity_matrix.masked_fill(~top_pad_mask[:, :, None], -1e10)
-
-        return similarity_matrix
 
     def configure_optimizers(self):
         return torch.optim.AdamW(
