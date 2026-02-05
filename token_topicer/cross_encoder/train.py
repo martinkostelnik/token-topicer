@@ -45,6 +45,7 @@ class CrossEncoderTopicClassifierModule(L.LightningModule):
         soft_max_score: bool = False,
     ) -> None:
         super().__init__()
+        self.save_hyperparameters()
 
         self.lm_path = lm_path
         self.learning_rate = learning_rate
@@ -153,6 +154,31 @@ class CrossEncoderTopicClassifierModule(L.LightningModule):
             "scores": scores,
             "mask": mask,
         }
+    
+    def predict_step(self, batch: dict[str, torch.Tensor], batch_idx: int):
+        input_ids = batch["input_ids"]
+        attention_mask = batch["attention_mask"]
+        token_type_ids = batch["token_type_ids"]
+
+        # Model forward
+        model_outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+
+        # Get similarity matrix and text padding mask
+        similarity_matrix = self.cross_dot_product(
+            model_outputs=model_outputs,
+            token_type_ids=token_type_ids,
+            attention_mask=attention_mask,
+        )
+
+        # Max over topic tokens
+        if self.soft_max_score:
+            scores = torch.logsumexp(similarity_matrix, dim=1)  # shape (B, S_text)
+        else:
+            scores = similarity_matrix.max(dim=1).values  # shape (B, S_text)
+
+        probs = torch.sigmoid(scores)
+
+        return probs
 
     def cross_dot_product(
         self,

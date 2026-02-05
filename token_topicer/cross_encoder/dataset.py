@@ -83,8 +83,8 @@ class CrossEncoderTopicClassifierDataModule(L.LightningDataModule):
         self.batch_size = batch_size
         self.tokenizer = transformers.AutoTokenizer.from_pretrained(tokenizer_path)
 
-        self.train_dataset = TokenGlinerDataset(self.json_path_train, self.tokenizer, self.include_topic_description, self.max_length, self.data_limit)
-        self.val_dataset = TokenGlinerDataset(self.json_path_val, self.tokenizer, self.include_topic_description, self.max_length, self.data_limit)
+        self.train_dataset = CrossEncoderTopicDataset(self.json_path_train, self.tokenizer, self.include_topic_description, self.max_length, self.data_limit)
+        self.val_dataset = CrossEncoderTopicDataset(self.json_path_val, self.tokenizer, self.include_topic_description, self.max_length, self.data_limit)
         
     def setup(self, stage: str | None = None) -> None:
         self.tokenizer.save_pretrained(self.trainer.default_root_dir)
@@ -108,7 +108,7 @@ class CrossEncoderTopicClassifierDataModule(L.LightningDataModule):
         )
 
 
-class TokenGlinerDataset(torch.utils.data.Dataset):
+class CrossEncoderTopicDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         json_path: Path,
@@ -210,7 +210,7 @@ if __name__ == "__main__":
     tokenizer = transformers.AutoTokenizer.from_pretrained(args.model)
 
     print("Building dataset...")
-    dataset = TokenGlinerDataset(
+    dataset = CrossEncoderTopicDataset(
         json_path=args.json_path,
         cluster_topics_path=args.cluster_topics_path,
         tokenizer=tokenizer,
