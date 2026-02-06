@@ -47,6 +47,37 @@ def prepare_sample_for_model(
     return sample
 
 
+def extract_spans(predictions: list[int], offset_mapping: list[tuple[int, int]], gap_tolerance: int=1):
+    result = []
+    start_char, end_char = None, None
+    gap_count = 0
+
+    for pred, (offset_start, offset_end) in zip(predictions, offset_mapping[-len(predictions)-1:-1], strict=True):
+        if pred == 1:
+            if start_char is None:
+                start_char = offset_start
+                end_char = offset_end
+                gap_count = 0
+            else:
+                if gap_count > 0:
+                    end_char = offset_end
+                    gap_count = 0
+                else:
+                    end_char = offset_end
+        else:
+            if start_char is not None:
+                gap_count += 1
+                if gap_count > gap_tolerance:
+                    result.append((start_char, end_char))
+                    start_char, end_char = None, None
+                    gap_count = 0
+
+    if start_char is not None:
+        result.append((start_char, end_char))
+
+    return result
+    
+
 if __name__ == "__main__":
     chunk = "Topic name - This is! a sample chunk of text."
     words = split_chunk_into_words(chunk)
