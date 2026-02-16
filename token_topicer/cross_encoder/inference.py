@@ -1,12 +1,16 @@
 from pathlib import Path
 import json
 import argparse
+import logging
 
 import torch
 import transformers
 
 from token_topicer.cross_encoder.train import CrossEncoderTopicClassifierModule, cross_dot_product
 from token_topicer.utils import prepare_sample_for_model, extract_spans
+
+
+logger = logging.getLogger(__name__)
 
 
 class CrossEncoderInferenceModule:
@@ -160,13 +164,20 @@ def parse_args():
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s", force=True)
     args = parse_args()
-    inference_module = CrossEncoderInferenceModule(model_path=args.model)
-    result = inference_module.predict_jsonl(input_data_path=args.data, threshold=args.threshold)
 
+    logger.info(f"Loading model from {args.model} ...")
+    inference_module = CrossEncoderInferenceModule(model_path=args.model)
+    logger.info("Model loaded successfully.")
+    logger.info(f"Running inference on the input data from {args.data} with threshold {args.threshold} ...")
+    result = inference_module.predict_jsonl(input_data_path=args.data, threshold=args.threshold)
+    logger.info("Inference completed.")
+
+    logger.info(f"Saving predictions to {args.save_path} ...")
     if args.save_path is not None:
         with args.save_path.open("w")  as f:
             for item in result:
                 item.pop("offset_mapping")  # Remove offset mapping from output for cleaner results
                 item.pop("probs")  # Remove raw probabilities from output for cleaner results
-                f.write(json.dumps(item) + "\n")
+                f.write(json.dumps(item, ensure_ascii=False) + "\n")
