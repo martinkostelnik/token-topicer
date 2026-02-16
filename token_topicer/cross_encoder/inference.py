@@ -51,6 +51,13 @@ class CrossEncoderInferenceModule:
         token_type_ids = sample["token_type_ids"].unsqueeze(0).to(self.device)
         attention_mask = sample["attention_mask"].unsqueeze(0).to(self.device)
 
+        sep_index = (sample["input_ids"] == self.tokenizer.sep_token_id).nonzero(as_tuple=True)[0][0].item()
+        sample["token_type_ids"] = torch.cat([
+            torch.zeros(sep_index + 1, dtype=torch.long),  # +1 to include SEP token in topic segment
+            torch.ones(len(sample["input_ids"]) - (sep_index + 1), dtype=torch.long),
+        ])
+        token_type_ids = sample["token_type_ids"].unsqueeze(0).to(self.device)
+
         with torch.no_grad():
             model_outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
             similarity_matrix = cross_dot_product(
@@ -147,14 +154,19 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Inference for Cross-Encoder Topic Classifier")
     parser.add_argument("--model", type=Path, required=True, help="Path to the trained model checkpoint")
     parser.add_argument("--data", type=Path, required=True, help="Path to the input data for inference")
+    parser.add_argument("--threshold", type=float, default=0.5, help="Threshold for binary classification")
+    parser.add_argument("--save-path", type=Path, default=None, help="Path to save the predictions with the specified threshold")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
     inference_module = CrossEncoderInferenceModule(model_path=args.model)
-    result = inference_module.predict_jsonl(input_data_path=args.data, threshold=0.482)
+    result = inference_module.predict_jsonl(input_data_path=args.data, threshold=args.threshold)
 
-    with open("inference_results.jsonl", "w") as f:
-        for item in result:
-            f.write(json.dumps(item) + "\n")
+    if args.save_path is not None:
+        with args.save_path.open("w")  as f:
+            for item in result:
+                item.pop("offset_mapping")  # Remove offset mapping from output for cleaner results
+                item.pop("probs")  # Remove raw probabilities from output for cleaner results
+                f.write(json.dumps(item) + "\n")

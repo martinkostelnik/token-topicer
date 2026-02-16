@@ -1,12 +1,14 @@
 import re
 
 import transformers
+import torch
 
 
-def split_chunk_into_words(chunk: str) -> list[str]:
-    pattern = r"\w+(?:'\w+)?|[^\w\s]"
-    words = re.findall(pattern, chunk, re.UNICODE)
-    return words
+def split_chunk_into_words(chunk: str) -> list[tuple[str, int, int]]:
+    """
+    Returns list of (word, start_char, end_char)
+    """
+    return [(m.group(), m.start(), m.end()) for m in re.finditer(r"\w+(?:'\w+)?|[^\w\s]", chunk)]
 
 
 def prepare_sample_for_model(
@@ -24,7 +26,7 @@ def prepare_sample_for_model(
         text,
         return_tensors="pt",
         truncation=True,
-        max_length=512,
+        max_length=max_length,
         return_offsets_mapping=True,
         return_token_type_ids=True,
         return_attention_mask=True,
@@ -37,6 +39,14 @@ def prepare_sample_for_model(
 
     if len(input_ids) > max_length:
         return None
+    
+    # Check if token_type_ids already has 0 for topic and 1 for text, if not, create them manually
+    if not (token_type_ids == 0).all() or not (token_type_ids == 1).all():
+        sep_index = (input_ids == tokenizer.sep_token_id).nonzero(as_tuple=True)[0][0].item()
+        token_type_ids = torch.cat([
+            torch.zeros(sep_index + 1, dtype=torch.long),  # +1 to include SEP token in topic segment
+            torch.ones(len(input_ids) - (sep_index + 1), dtype=torch.long),
+        ])
 
     sample = {
         "input_ids": input_ids,
